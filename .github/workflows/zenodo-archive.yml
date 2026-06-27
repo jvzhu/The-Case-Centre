@@ -1,0 +1,66 @@
+name: Deploy Release to Zenodo
+
+on:
+  release:
+    types: [published] # Triggers only when a new release is formally published
+
+permissions:
+  contents: read # Secure least-privilege permission to read repository files
+
+jobs:
+  archive:
+    name: Upload to Zenodo
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Archive Repository Files into ZIP
+        run: |
+          git archive --format=zip HEAD -o release-archive.zip
+
+      - name: Deposit to Zenodo via REST API
+        env:
+          ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
+        run: |
+          # 1. Create a new deposition draft on Zenodo
+          # (For production use: )
+          # (For testing, you can change the URL to sandbox.zenodo.org)
+          RESPONSE=$(curl -H "Content-Type: application/json" \
+               -X POST "https://zenodo.org?access_token=${ZENODO_TOKEN}" \
+               -d '{}')
+          
+          # Extract the Deposition ID and Bucket URL from the response
+          DEPOSITION_ID=$(echo $RESPONSE | jq --raw-output '.id')
+          BUCKET_URL=$(echo $RESPONSE | jq --raw-output '.links.bucket')
+          
+          echo "Created deposition ID: $DEPOSITION_ID"
+          
+          # 2. Upload the ZIP archive file into the deposition bucket
+          curl --upload-file release-archive.zip \
+               "${BUCKET_URL}/release-archive.zip?access_token=${ZENODO_TOKEN}"
+          
+          # 3. Add basic required metadata to the draft
+          # Edit this payload to match your project details
+          METADATA=$(cat <<EOF
+          {
+            "metadata": {
+              "title": "${{ github.event.repository.name }}: ${{ github.event.release.tag_name }}",
+              "upload_type": "software",
+              "description": "${{ github.event.release.body || 'Automated software release archive.' }}",
+              "creators": [{"name": "${{ github.repository_owner }}"}],
+              "license": "cc-by-4.0"
+            }
+          }
+          EOF
+          )
+          
+          curl -H "Content-Type: application/json" \
+               -X PUT "https://zenodo.org/${DEPOSITION_ID}?access_token=${ZENODO_TOKEN}" \
+               -d "$METADATA"
+               
+          # 4. Publish the deposition to mint a permanent DOI
+          curl -X POST "https://zenodo.org/${DEPOSITION_ID}/actions/publish?access_token=${ZENODO_TOKEN}"
+          
+          echo "Successfully published release to Zenodo under ID: $DEPOSITION_ID"
